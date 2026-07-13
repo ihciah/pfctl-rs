@@ -206,10 +206,11 @@ impl Transaction {
         // Keep the backing storage alive until PF has copied the rule below.
         let nat_pool = if let Some(nat_to) = rule.get_nat_to() {
             // register NAT address in newly created address pool
-            utils::add_pool_address(fd, nat_to.ip(), pool_ticket)?;
+            let nat_pool_addr = nat_to.pool_address();
+            utils::add_pool_address(fd, nat_pool_addr.clone(), pool_ticket)?;
 
             // copy address pool in pf_rule
-            let mut nat_pool = nat_to.ip().to_pool_addr_list()?;
+            let mut nat_pool = PoolAddrList::new(slice::from_ref(&nat_pool_addr))?;
             nat_pool.write_to(&mut pfioc_rule.rule.rpool.list);
             nat_to.port().try_copy_to(&mut pfioc_rule.rule.rpool)?;
             Some(nat_pool)

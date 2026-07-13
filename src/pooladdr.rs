@@ -19,6 +19,7 @@ use std::{ptr, vec::Vec};
 pub struct PoolAddr {
     interface: Interface,
     ip: Ip,
+    dynamic_interface: Option<Interface>,
 }
 
 impl PoolAddr {
@@ -26,6 +27,21 @@ impl PoolAddr {
         PoolAddr {
             interface: interface.into(),
             ip: ip.into(),
+            dynamic_interface: None,
+        }
+    }
+
+    /// Represents PF's dynamic interface-address syntax, for example `(en0)`.
+    /// The address is resolved and updated by PF as the interface changes.
+    pub fn dynamic_interface_address<T: Into<Interface>>(interface: T) -> Self {
+        let interface = interface.into();
+        PoolAddr {
+            interface: interface.clone(),
+            // PF derives the optional dynamic-interface prefix from this
+            // mask. `-> (en0)` has no prefix, which PF represents as /128;
+            // `Ip::Any` would encode /0 and print as `(en0)/0`.
+            ip: Ip::from(std::net::Ipv6Addr::UNSPECIFIED),
+            dynamic_interface: Some(interface),
         }
     }
 }
@@ -35,6 +51,7 @@ impl From<Interface> for PoolAddr {
         PoolAddr {
             interface,
             ip: Ip::Any,
+            dynamic_interface: None,
         }
     }
 }
@@ -44,6 +61,7 @@ impl From<Ip> for PoolAddr {
         PoolAddr {
             interface: Interface::Any,
             ip,
+            dynamic_interface: None,
         }
     }
 }
@@ -54,6 +72,12 @@ impl TryCopyTo<ffi::pfvar::pf_pooladdr> for PoolAddr {
     fn try_copy_to(&self, pf_pooladdr: &mut ffi::pfvar::pf_pooladdr) -> Result<(), Self::Error> {
         self.interface.try_copy_to(&mut pf_pooladdr.ifname)?;
         self.ip.copy_to(&mut pf_pooladdr.addr);
+        if let Some(interface) = &self.dynamic_interface {
+            pf_pooladdr.addr.type_ = ffi::pfvar::PF_ADDR_DYNIFTL as u8;
+            // SAFETY: `ifname` is the active union member when using
+            // PF_ADDR_DYNIFTL, and Interface validates its fixed-size buffer.
+            interface.try_copy_to(unsafe { &mut pf_pooladdr.addr.v.ifname })?;
+        }
         Ok(())
     }
 }
@@ -123,6 +147,17 @@ impl PoolAddrList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dynamic_interface_address_uses_a_full_length_mask() {
+        let pool_addr = PoolAddr::dynamic_interface_address("lo0");
+        let mut pf_pooladdr = ffi::pfvar::pf_pooladdr::new_zeroed();
+        pool_addr.try_copy_to(&mut pf_pooladdr).unwrap();
+
+        assert_eq!(pf_pooladdr.addr.type_, ffi::pfvar::PF_ADDR_DYNIFTL as u8);
+        let mask = unsafe { pf_pooladdr.addr.v.a.mask.pfa._addr8 };
+        assert!(mask.iter().all(|byte| *byte == u8::MAX));
+    }
 
     #[test]
     fn new_links_the_owned_pool_storage() {

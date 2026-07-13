@@ -59,14 +59,14 @@ impl From<DropAction> for u32 {
 }
 
 /// Enum describing what should happen to a packet that matches a NAT rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NatRuleAction {
     Nat { nat_to: NatEndpoint },
     NoNat,
 }
 
-impl From<NatRuleAction> for u8 {
-    fn from(rule_action: NatRuleAction) -> Self {
+impl From<&NatRuleAction> for u8 {
+    fn from(rule_action: &NatRuleAction) -> Self {
         match rule_action {
             NatRuleAction::Nat { .. } => ffi::pfvar::PF_NAT as u8,
             NatRuleAction::NoNat => ffi::pfvar::PF_NONAT as u8,

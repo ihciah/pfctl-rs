@@ -32,6 +32,17 @@ fn nat_rule_ipv6() -> pfctl::NatRule {
     )
 }
 
+fn dynamic_interface_nat_rule() -> pfctl::NatRule {
+    pfctl::NatRuleBuilder::default()
+        .action(pfctl::NatRuleAction::Nat {
+            nat_to: pfctl::NatEndpoint::interface_address("lo0"),
+        })
+        .interface("lo0")
+        .to(pfctl::Endpoint::new(Ipv4Addr::new(127, 0, 0, 1), 1234))
+        .build()
+        .unwrap()
+}
+
 fn nonat_rule(dest: pfctl::Ip) -> pfctl::NatRule {
     pfctl::NatRuleBuilder::default()
         .action(pfctl::NatRuleAction::NoNat)
@@ -80,6 +91,18 @@ test!(add_nat_rule_ipv6 {
     assert_eq!(
         pfcli::get_nat_rules(ANCHOR_NAME),
         &["nat inet6 from any to ::1 port = 1234 -> ::2"]
+    );
+});
+
+test!(add_dynamic_interface_nat_rule {
+    let mut pf = pfctl::PfCtl::new().unwrap();
+    let rule = dynamic_interface_nat_rule();
+    assert_matches!(pf.add_nat_rule(ANCHOR_NAME, &rule), Ok(()));
+    assert_eq!(
+        pfcli::get_nat_rules(ANCHOR_NAME),
+        // macOS PF prints an implicit dynamic-interface prefix canonically
+        // as /128, although it is configured through `-> (lo0)`.
+        &["nat on lo0 inet from any to 127.0.0.1 port = 1234 -> (lo0)/128"]
     );
 });
 

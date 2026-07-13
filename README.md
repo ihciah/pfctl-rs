@@ -47,6 +47,20 @@ let rule = pfctl::FilterRuleBuilder::default()
 pf.add_rule(anchor_name, &rule).unwrap();
 ```
 
+Dynamic interface-address NAT (PF syntax `-> (en0)`) is available through
+`NatEndpoint::interface_address`:
+
+```rust,no_run
+let rule = pfctl::NatRuleBuilder::default()
+    .action(pfctl::NatRuleAction::Nat {
+        nat_to: pfctl::NatEndpoint::interface_address("en0"),
+    })
+    .interface("en0")
+    .build()
+    .unwrap();
+pf.add_nat_rule("example-nat", &rule).unwrap();
+```
+
 ## System bindings
 
 See comments in `generate_bindings.sh` for how to generate the Rust bindings to the system

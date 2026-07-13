@@ -10,6 +10,7 @@ use crate::{
     Error, ErrorInternal, Result,
     conversion::{CopyTo, TryCopyTo},
     ffi,
+    pooladdr::PoolAddr,
 };
 use ipnetwork::IpNetwork;
 use std::{
@@ -182,7 +183,7 @@ impl NatRule {
     fn get_af(&self) -> Result<AddrFamily> {
         let endpoint_af = compatible_af(self.from.get_af(), self.to.get_af())?;
         if let Some(nat_to) = self.get_nat_to() {
-            let nat_af = compatible_af(endpoint_af, nat_to.0.get_af())?;
+            let nat_af = compatible_af(endpoint_af, nat_to.get_af())?;
             compatible_af(self.af, nat_af)
         } else {
             compatible_af(self.af, endpoint_af)
@@ -191,38 +192,81 @@ impl NatRule {
 
     /// Accessor for `nat_to`
     pub fn get_nat_to(&self) -> Option<NatEndpoint> {
-        match self.action {
-            NatRuleAction::Nat { nat_to } => Some(nat_to),
+        match &self.action {
+            NatRuleAction::Nat { nat_to } => Some(nat_to.clone()),
             NatRuleAction::NoNat => None,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NatEndpoint(Endpoint);
+/// The address pool used as the translation target of a NAT rule.
+///
+/// [`NatEndpoint::interface_address`] corresponds to PF syntax such as
+/// `-> (en0)`: PF resolves the interface address dynamically, so the rule
+/// remains correct when DHCP, roaming, or address-renumbering changes it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NatEndpoint {
+    Address(Endpoint),
+    InterfaceAddress {
+        endpoint: Endpoint,
+        interface: Interface,
+    },
+}
 
 impl Deref for NatEndpoint {
     type Target = Endpoint;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        match self {
+            Self::Address(endpoint) => endpoint,
+            Self::InterfaceAddress { endpoint, .. } => endpoint,
+        }
+    }
+}
+
+impl NatEndpoint {
+    /// NAT to the current address of `interface`, equivalent to `-> (interface)`.
+    pub fn interface_address<T: Into<Interface>>(interface: T) -> Self {
+        Self::InterfaceAddress {
+            endpoint: Endpoint::new(Ip::Any, Self::default_port()),
+            interface: interface.into(),
+        }
+    }
+
+    pub(crate) fn pool_address(&self) -> PoolAddr {
+        match self {
+            Self::Address(endpoint) => PoolAddr::from(endpoint.ip()),
+            Self::InterfaceAddress { interface, .. } => {
+                PoolAddr::dynamic_interface_address(interface.clone())
+            }
+        }
+    }
+
+    fn get_af(&self) -> AddrFamily {
+        self.deref().get_af()
+    }
+
+    pub(crate) fn port(&self) -> Port {
+        match self {
+            Self::Address(endpoint) => endpoint.port(),
+            Self::InterfaceAddress { endpoint, .. } => endpoint.port(),
+        }
+    }
+
+    fn default_port() -> Port {
+        const NAT_LOWER_DEFAULT: u16 = 32768;
+        const NAT_UPPER_DEFAULT: u16 = 49151;
+        Port::Range(
+            NAT_LOWER_DEFAULT,
+            NAT_UPPER_DEFAULT,
+            PortRangeModifier::Inclusive,
+        )
     }
 }
 
 impl From<Ip> for NatEndpoint {
     fn from(ip: Ip) -> Self {
-        // Default NAT port range
-        const NAT_LOWER_DEFAULT: u16 = 32768;
-        const NAT_UPPER_DEFAULT: u16 = 49151;
-
-        Self(Endpoint::new(
-            ip,
-            Port::Range(
-                NAT_LOWER_DEFAULT,
-                NAT_UPPER_DEFAULT,
-                PortRangeModifier::Inclusive,
-            ),
-        ))
+        Self::Address(Endpoint::new(ip, Self::default_port()))
     }
 }
 
@@ -234,7 +278,7 @@ impl Default for NatEndpoint {
 
 impl From<Endpoint> for NatEndpoint {
     fn from(endpoint: Endpoint) -> Self {
-        Self(endpoint)
+        Self::Address(endpoint)
     }
 }
 
@@ -254,7 +298,7 @@ impl TryCopyTo<ffi::pfvar::pf_rule> for NatRule {
     type Error = crate::Error;
 
     fn try_copy_to(&self, pf_rule: &mut ffi::pfvar::pf_rule) -> Result<()> {
-        pf_rule.action = self.action.into();
+        pf_rule.action = (&self.action).into();
         self.interface.try_copy_to(&mut pf_rule.ifname)?;
         pf_rule.af = self.get_af()?.into();
 
